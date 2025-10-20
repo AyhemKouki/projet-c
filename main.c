@@ -1,12 +1,14 @@
 #include "raylib.h"
-#define MAX_PLATFORMS 5
-#define MAX_DIAMONDS 5
+#define MAX_PLATFORMS 8
+#define MAX_DIAMONDS 10
+#define MAX_SPIKEHEADS 3
 
 typedef enum {
     PLAYER_IDLE,
     PLAYER_RUN,
     PLAYER_JUMP,
-    PLAYER_FALL
+    PLAYER_FALL,
+    PLAYER_HIT
 } PlayerState;
 
 int main(void) {
@@ -22,37 +24,45 @@ int main(void) {
     Image imgRun  = LoadImage("Sprites/01-KingHuman/run.png");
     Image imgJump = LoadImage("Sprites/01-KingHuman/jump.png");
     Image imgFall = LoadImage("Sprites/01-KingHuman/fall.png");
+    Image imgHit = LoadImage("Sprites/01-KingHuman/Hit.png");
 
     Image background = LoadImage("Sprites/Background/Blue.png");
     Image ground = LoadImage("Sprites/ground.png");
     Image platform = LoadImage("Sprites/platform.png");
     Image diamond = LoadImage("Sprites/Diamond.png");
 
+    Image spikeHead = LoadImage("Sprites/enemy/idle.png");
+
     ImageResize(&imgIdle, imgIdle.width * 2, imgIdle.height * 2);
     ImageResize(&imgRun,  imgRun.width  * 2, imgRun.height  * 2);
     ImageResize(&imgJump, imgJump.width * 2, imgJump.height * 2);
     ImageResize(&imgFall, imgFall.width * 2, imgFall.height * 2);
+    ImageResize(&imgHit, imgHit.width * 2, imgHit.height * 2);
     ImageResize(&ground , ground.width * 2 , ground.height * 2);
     ImageResize(&diamond , diamond.width * 2 , diamond.height * 2);
-
+    ImageResize(&spikeHead , spikeHead.width * 1.5 , spikeHead.height * 1.5);
 
     Texture2D texIdle = LoadTextureFromImage(imgIdle);
     Texture2D texRun  = LoadTextureFromImage(imgRun);
     Texture2D texJump = LoadTextureFromImage(imgJump);
     Texture2D texFall = LoadTextureFromImage(imgFall);
+    Texture2D texHit = LoadTextureFromImage(imgHit);
     Texture2D texBackground = LoadTextureFromImage(background);
     Texture2D texGround = LoadTextureFromImage(ground);
     Texture2D texPlatform = LoadTextureFromImage(platform);
     Texture2D texDiamond = LoadTextureFromImage(diamond);
+    Texture2D texSpikeHead = LoadTextureFromImage(spikeHead);
 
     UnloadImage(imgIdle);
     UnloadImage(imgRun);
     UnloadImage(imgJump);
     UnloadImage(imgFall);
+    UnloadImage(imgHit);
     UnloadImage(background);
     UnloadImage(ground);
     UnloadImage(platform);
     UnloadImage(diamond);
+    UnloadImage(spikeHead);
 
     // Frame sizes
     const int FRAME_WIDTH = 78 * 2;
@@ -62,6 +72,7 @@ int main(void) {
     int runFrameCount  = texRun.width  / FRAME_WIDTH;
     int jumpFrameCount = texJump.width / FRAME_WIDTH;
     int fallFrameCount = texFall.width / FRAME_WIDTH;
+    int hitFrameCount  = texHit.width  / FRAME_WIDTH;
 
     // Player hitbox
     float hitboxOffsetX = 30;
@@ -72,7 +83,7 @@ int main(void) {
     Rectangle player = {100 + hitboxOffsetX, 300 + hitboxOffsetY, hitboxWidth, hitboxHeight};
     float velocityY = 0;
     const float gravity = 0.5f;
-    const float jumpForce = -10.0f;
+    const float jumpForce = -12.0f;
     bool onGround = false;
     bool facingRight = true;
 
@@ -80,15 +91,33 @@ int main(void) {
     float frameSpeed = 0.15f;
     float frameTimer = 0;
     PlayerState state = PLAYER_IDLE;
+    // Player hit animation state
+    bool playerHit = false;
+    int hitFrame = 0;
+    float hitFrameTimer = 0.0f;
+    float hitFrameSpeed = 0.2f;
 
-    //diamond animation properties
+    // Diamond animation properties
     const int DIAMOND_FRAME_WIDTH = 18 * 2; 
     const int DIAMOND_FRAME_HEIGHT = texDiamond.height;
-    const int DIAMOND_FRAME_COUNT = 10; // sprite sheet has 10 frames
-    float diamondFrameTimer[MAX_DIAMONDS] = {0}; // separate timer for each diamond
-    float diamondFrameSpeed = 0.15f; // speed of animation
-    int diamondFrame[MAX_DIAMONDS] = {0}; // current frame index for each diamond
+    const int DIAMOND_FRAME_COUNT = 10;
+    float diamondFrameTimer[MAX_DIAMONDS] = {0};
+    float diamondFrameSpeed = 0.15f;
+    int diamondFrame[MAX_DIAMONDS] = {0};
 
+    // Spike Head properties
+    Rectangle spikeHeads[MAX_SPIKEHEADS] = {
+        {650, 320, 78, texSpikeHead.height},
+        {1050, 520, 78, texSpikeHead.height},
+        {1550, 320, 78, texSpikeHead.height}
+    };
+    float spikeMinY[MAX_SPIKEHEADS] = {320, 520, 320};
+    float spikeAmplitude = 200; 
+    float spikeSpeedDown = 6.0f;
+    float spikeSpeedUp = 2.0f;
+    bool spikeGoingDown[MAX_SPIKEHEADS] = {true, true, true};
+
+    // Spikehead no longer plays its own hit animation; collisions trigger player hit animation
 
     // Camera
     Camera2D camera = {0};
@@ -97,22 +126,30 @@ int main(void) {
     camera.rotation = 0.0f;
     camera.zoom = 1.0f;
 
-    // Platforms
+    // Platforms - Enhanced level design
     Rectangle platforms[MAX_PLATFORMS] = {
-        { 200, 575, 96, 20 },
-        { 450, 500, 96, 20 },
-        { 700, 425, 96, 20 },
-        { 900, 350, 96, 20 },
-        { 0, SCREEN_HEIGHT - 50, WORLD_WIDTH, 50 }
+        { 0, SCREEN_HEIGHT - 50, WORLD_WIDTH, 50 },     // Ground
+        { 250, 550, 120, 20 },     // First jump
+        { 500, 470, 96, 20 },      // Stair step 1
+        { 700, 390, 96, 20 },      // Stair step 2
+        { 900, 310, 150, 20 },     // Landing platform
+        { 1150, 390, 96, 20 },     // Downward path
+        { 1400, 470, 96, 20 },     // Continuing down
+        { 1650, 550, 200, 20 }     // Final platform
     };
 
-    // Diamonds
+    // Diamonds - Strategic placement
     Rectangle diamonds[MAX_DIAMONDS] = {
-        {250, 520, 25, 25},
-        {500, 450, 25, 25},
-        {750, 370, 25, 25},
-        {950, 300, 25, 25},
-        {1200, 550, 25, 25}
+        {280, 500, 25, 25},    // First platform
+        {530, 420, 25, 25},    // Second platform  
+        {730, 340, 25, 25},    // Third platform
+        {950, 260, 25, 25},    // Fourth platform
+        {1170, 340, 25, 25},   // Fifth platform
+        {1420, 420, 25, 25},   // Sixth platform
+        {1680, 500, 25, 25},   // Seventh platform
+        {1800, 500, 25, 25},   // End of final platform
+        {400, 300, 25, 25},    // Bonus: hard to reach
+        {1600, 300, 25, 25}    // Bonus: hard to reach
     };
 
     int score = 0;
@@ -123,7 +160,7 @@ int main(void) {
         player.y += velocityY;
         onGround = false;
 
-        // Collision
+        // Collision with platforms
         for (int i = 0; i < MAX_PLATFORMS; i++) {
             if (CheckCollisionRecs(player, platforms[i])) {
                 if (velocityY > 0 && player.y + player.height - velocityY <= platforms[i].y) {
@@ -155,17 +192,28 @@ int main(void) {
         if (targetX < SCREEN_WIDTH/2) targetX = SCREEN_WIDTH/2;
         if (targetX > WORLD_WIDTH - SCREEN_WIDTH/2) targetX = WORLD_WIDTH - SCREEN_WIDTH/2;
         if (targetY < SCREEN_HEIGHT/2) targetY = SCREEN_HEIGHT/2;
-        if (targetY > SCREEN_HEIGHT/2) targetY = SCREEN_HEIGHT/2; // optional vertical lock
+        if (targetY > SCREEN_HEIGHT/2) targetY = SCREEN_HEIGHT/2;
         camera.target = (Vector2){ targetX, targetY };
 
-        // Player state
-        if (!onGround) state = (velocityY < 0) ? PLAYER_JUMP : PLAYER_FALL;
-        else if (moving) state = PLAYER_RUN;
-        else state = PLAYER_IDLE;
+    // Player state
+    if (playerHit) state = PLAYER_HIT;
+    else if (!onGround) state = (velocityY < 0) ? PLAYER_JUMP : PLAYER_FALL;
+    else if (moving) state = PLAYER_RUN;
+    else state = PLAYER_IDLE;
 
         // Animation update
-        frameTimer += frameSpeed;
-        if (frameTimer >= 1.0f) { frameTimer = 0; frame++; }
+        if (state != PLAYER_HIT) {
+            frameTimer += frameSpeed;
+            if (frameTimer >= 1.0f) { frameTimer = 0; frame++; }
+        } else {
+            // Update player hit frames independently; stop hit after one cycle
+            hitFrameTimer += hitFrameSpeed;
+            if (hitFrameTimer >= 1.0f) { hitFrameTimer = 0; hitFrame++; }
+            if (hitFrame >= hitFrameCount) {
+                hitFrame = 0;
+                playerHit = false;
+            }
+        }
 
         int frameCount = 1;
         Texture2D currentTexture = texIdle;
@@ -174,21 +222,40 @@ int main(void) {
             case PLAYER_RUN:  frameCount = runFrameCount;  currentTexture = texRun;  break;
             case PLAYER_JUMP: frameCount = jumpFrameCount; currentTexture = texJump; break;
             case PLAYER_FALL: frameCount = fallFrameCount; currentTexture = texFall; break;
+            case PLAYER_HIT:  frameCount = hitFrameCount;  currentTexture = texHit;  break;
         }
-        if(frame >= frameCount) frame = 0;
-
-        Rectangle sourceRec = { frame * FRAME_WIDTH, 0, FRAME_WIDTH, FRAME_HEIGHT };
+        if(state != PLAYER_HIT && frame >= frameCount) frame = 0;
+        Rectangle sourceRec = { (state == PLAYER_HIT ? hitFrame : frame) * FRAME_WIDTH, 0, FRAME_WIDTH, FRAME_HEIGHT };
         if (!facingRight) sourceRec.width = -FRAME_WIDTH;
 
         // Diamond collision
         for (int i = 0; i < MAX_DIAMONDS; i++) {
             if (diamonds[i].width > 0 && CheckCollisionRecs(player, diamonds[i])) {
-                score++;               // Increase score
-                diamonds[i].width = 0; // Remove diamond (simple way)
+                score++;
+                diamonds[i].width = 0;
                 diamonds[i].height = 0;
             }
         }
 
+        // Spike Head movement and collision
+        for (int i = 0; i < MAX_SPIKEHEADS; i++) {
+            if (spikeGoingDown[i]) {
+                spikeHeads[i].y += spikeSpeedDown;
+                if (spikeHeads[i].y >= spikeMinY[i] + spikeAmplitude)
+                    spikeGoingDown[i] = false;
+            } else {
+                spikeHeads[i].y -= spikeSpeedUp;
+                if (spikeHeads[i].y <= spikeMinY[i])
+                    spikeGoingDown[i] = true;
+            }
+
+            // Player collision with spikehead triggers player hit animation
+            if (CheckCollisionRecs(player, spikeHeads[i]) && !playerHit) {
+                playerHit = true;
+                hitFrame = 0;
+                hitFrameTimer = 0.0f;
+            }
+        }
 
         BeginDrawing();
             ClearBackground(SKYBLUE);
@@ -203,20 +270,22 @@ int main(void) {
 
                 // Draw platforms
                 for (int i = 0; i < MAX_PLATFORMS; i++) {
-                    
-                    DrawTexture(texPlatform ,platforms[i].x , platforms[i].y , WHITE );
-                    DrawRectangleLinesEx(platforms[i], 2, BLACK);
+                    DrawTexture(texPlatform, platforms[i].x, platforms[i].y, WHITE);
                 }
 
-                // Draw ground along bottom of screen (or at platform level)
+                // Draw ground along bottom
                 for(int x = 0; x < WORLD_WIDTH; x += texGround.width) {
-                    DrawTexture(texGround, x, platforms[MAX_PLATFORMS-1].y, WHITE);
+                    DrawTexture(texGround, x, platforms[0].y, WHITE);
+                }
+
+                // Draw spikeheads (no per-enemy hit animation)
+                for (int i = 0; i < MAX_SPIKEHEADS; i++) {
+                    DrawTexture(texSpikeHead, spikeHeads[i].x, spikeHeads[i].y, WHITE);
                 }
                 
                 // Draw diamonds with animation
                 for (int i = 0; i < MAX_DIAMONDS; i++) {
                     if (diamonds[i].width > 0) {
-                        // Update animation timer
                         diamondFrameTimer[i] += diamondFrameSpeed;
                         if (diamondFrameTimer[i] >= 1.0f) {
                             diamondFrameTimer[i] = 0;
@@ -224,30 +293,30 @@ int main(void) {
                             if (diamondFrame[i] >= DIAMOND_FRAME_COUNT) diamondFrame[i] = 0;
                         }
 
-                        // Draw diamond
                         Rectangle sourceRecDiamond = {
                             diamondFrame[i] * DIAMOND_FRAME_WIDTH, 0, DIAMOND_FRAME_WIDTH, DIAMOND_FRAME_HEIGHT
                         };
                         DrawTextureRec(texDiamond, sourceRecDiamond, (Vector2){ diamonds[i].x -10, diamonds[i].y }, WHITE);
-                        // Draw hitbox
-                        DrawRectangleLinesEx(diamonds[i], 2, RED);
                     }
                 }
-
 
                 // Draw player
                 Vector2 drawPos = { player.x - hitboxOffsetX, player.y - hitboxOffsetY };
                 if (!facingRight) drawPos.x = player.x - hitboxOffsetX - player.width/2 - 5;
                 DrawTextureRec(currentTexture, sourceRec, drawPos, WHITE);
 
-                // Draw hitbox
-                DrawRectangleLinesEx(player, 2, RED);
-
             EndMode2D();
 
-            // Draw score on screen
-            DrawText(TextFormat("Score: %d", score), 10, 40, 20, BLACK);
+            // Draw UI
+            DrawText(TextFormat("Score: %d/%d", score, MAX_DIAMONDS), 10, 40, 20, BLACK);
             DrawText("Press SPACE to jump", 10, 10, 20, BLACK);
+            DrawText("Use A and D to move", 10, 70, 20, BLACK);
+
+            // Win condition
+            if (score == MAX_DIAMONDS) {
+                DrawText("LEVEL COMPLETE!", SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 - 50, 40, GREEN);
+                DrawText("All diamonds collected!", SCREEN_WIDTH/2 - 120, SCREEN_HEIGHT/2, 30, GREEN);
+            }
 
         EndDrawing();
     }
@@ -257,10 +326,12 @@ int main(void) {
     UnloadTexture(texRun);
     UnloadTexture(texJump);
     UnloadTexture(texFall);
+    UnloadTexture(texHit);
     UnloadTexture(texBackground);
     UnloadTexture(texGround);
     UnloadTexture(texPlatform);
     UnloadTexture(texDiamond);
+    UnloadTexture(texSpikeHead);
 
     CloseWindow();
     return 0;
